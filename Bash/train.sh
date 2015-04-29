@@ -22,6 +22,22 @@
 #   access to the the required information - especially, when I am in
 #   a hurry (and, in contrast to a browser, a console is always available).
 #
+# Example:
+######
+# $ ./train.sh "Morningside" "Waitakere, Swanson" -c -u
+#
+#	 Auckland Live Train Time Table 
+#
+#    1. Route West from Morningside/2 to Swanson     boarding at 09:12	       (in time)
+#    2. Route West from Morningside/2 to Waitakere   boarding at 09:28	 -2 min  (09:26)
+#    3. Route West from Morningside/2 to Swanson     boarding at 09:42	 -1 min  (09:40)
+#    4. Route West from Morningside/2 to Swanson     boarding at 09:58	 -1 min  (09:56)
+#    5. Route West from Morningside/2 to Waitakere   boarding at 10:28	 -2 min  (10:26)
+#    6. Route West from Morningside/2 to Swanson     boarding at 10:58
+#
+#	(last update: 09:15:46)
+#
+######
 # written 2015 by Benhard Heinloth <bernhard@heinloth.net>
 
 
@@ -37,6 +53,9 @@ AGENT="Mozilla/5.0 (Windows; U; Windows NT 5.1; de; rv:1.9.2.3) Gecko/20100401 F
 HOUR=2
 # set update timer to zero
 SLEEP=0
+
+# Start timestamp
+INITTIMESTAMP=$(date +%s)
 
 # Print usage information
 function help() {
@@ -186,7 +205,7 @@ while true; do
 	APISIG=$(echo -n "$TIMESTAMP$APIKEY" | openssl sha1 -hmac "$APISECRET" | sed -e "s/^.*= //")
 
 	# retriev the live train data in JSON format
-	JSON="$(curl -A "$AGENT" --referer "$LINK" "https://api.at.govt.nz/v1/public-restricted/departures/${STATIONNR}?api_key=${APIKEY}&api_sig=${APISIG}&callback=jQuery1820390620679827407_1430261893096&hours=$HOUR&rowCount=4&isMobile=false&mobileRowCount=10&_=${TIMESTAMP}000"  2>/dev/null | sed -e 's/^.*\[\({.*}\)\].*$/},\1\,{/;s/},{/\n/g' | sort )"
+	JSON="$(curl -A "$AGENT" --referer "$LINK" "https://api.at.govt.nz/v1/public-restricted/departures/${STATIONNR}?api_key=${APIKEY}&api_sig=${APISIG}&callback=jQuery1820390620679827407_${INITTIMESTAMP}000&hours=$HOUR&rowCount=4&isMobile=false&mobileRowCount=10&_=${TIMESTAMP}000"  2>/dev/null | sed -e 's/^.*\[\({.*}\)\].*$/},\1\,{/;s/},{/\n/g' | sort )"
 
 	# Counter for entries
 	NUMBER=0
@@ -219,6 +238,9 @@ while true; do
 			# default color
 			color=0
 
+			# additional time specification
+			timespec=""
+
 			# Perhaps theres no tracking available...
 			if [[ "${item[monitored]}" == "false" ]] ; then
 				color=2
@@ -227,27 +249,45 @@ while true; do
 			# official congestion?
 			if [[ "${item[inCongestion]}" != "false" ]] ; then
 				color=31
+					timespec=" \e[31m(congestion)"
 			fi
 
 			# calculate time specification addition
-			timespec=""
 			if [[ "${item[expectedArrivalTime]}" != "null" ]] ; then
-				diff=$(( ( ${item[expectedArrivalTime]} - ${item[scheduledArrivalTime]} ) / 60 ));
-				if [[ "$diff" -eq "0" ]] ; then
-					timespec=" \e[32m (in time)"
+				diff=$((${item[expectedArrivalTime]} - ${item[scheduledArrivalTime]}));	
+				if [[ "$(( $diff / 60 ))" -eq "0" ]] ; then
+					timespec="\t \e[32m      (in time)"
 				else
 					if (( $diff > 0 )) ; then
-						diff=$"\e[31m+$diff"
+						diff=$"\e[31m+$(( ( $diff + 30 ) / 60 ))"
+					else
+						diff=$"\e[33m$(( ( $diff - 30 ) / 60 ))"
 					fi
-					timespec=" \e[1m ${diff} min\t ($(date -d @${item[expectedArrivalTime]} +%H:%M))"
+					timespec="\t \e[1m$( printf "%3s" "$diff" ) min  ($(date -d @${item[expectedArrivalTime]} +%H:%M))"
 				fi
 			fi
 
 			# Print entry line
 			NUMBER=$((NUMBER +1 ))
-			dest="${item[destinationDisplay],,}";
-			route="${item[route_short_name],,}";
-			echo -en "\e[${color}m$NUMBER. Route \e[1m${route^}\e[0;${color}m from \e[1m${STATION^}\e[0;${color}m/${item[departurePlatformName]}\t to \e[1m${dest^}\e[${color}m/${item[arrivalPlatformName]}\t boarding at \e[1m$(date -d @${item[scheduledArrivalTime]} +%H:%M)\e[0;${color}m$timespec\e[0m\e[K"
+			route="${item[route_short_name],,}"
+			printf " \e[${color}m%4d. Route \e[1m%-4s\e[0;${color}m from \e[1m${STATION^}\e[0;${color}m" "$NUMBER" "${route^}"
+
+			# departure platform if available
+			if [[ "${item[departurePlatformName]}" != "null" ]] ; then
+				echo -en "/${item[departurePlatformName]}"
+			fi
+
+			# destination information
+			dest="${item[destinationDisplay],,}"
+			printf " to \e[1m%-10s\e[${color}m" "${dest^}"
+
+			# boarding or arrival?
+			if [[ "${item[scheduledArrivalTime]}" != "null" ]] ; then
+				echo -en "  boarding at \e[1m$(date -d @${item[scheduledArrivalTime]} +%H:%M)\e[0;${color}m$timespec"
+			elif [[ "${item[scheduledDepartureTime]}" != "null" ]] ; then
+				echo -en " departure at \e[1m$(date -d @${item[scheduledDepartureTime]} +%H:%M)\e[0;${color}m$timespec"
+			fi
+			echo -e "\e[0m\e[K"
 		fi
 
 		# Restore input format seperator
